@@ -2,7 +2,8 @@
 # -*- coding: utf-8 -*-
 """
 llm-plan-warmer: 通用多供应商 & 多账号 LLM / Coding Plan 定时预热保活脚本
-支持 .env 自动加载与每个供应商/账号单独自定义 trigger_hours / interval_hours
+支持: 智谱 Zhipu, 商汤 SenseNova Token Plan, DeepSeek, Kimi, 硅基流动等
+支持: 单模型或多模型列表 (如商汤按模型单独冷却)、自定义 trigger_hours / interval_hours
 """
 import os
 import sys
@@ -118,7 +119,16 @@ def ping_single_account(acc):
     name = acc.get("name", "未命名服务商")
     api_key = acc.get("api_key", "")
     base_url = acc.get("base_url", "https://open.bigmodel.cn/api/paas/v4/")
-    model = acc.get("model", "glm-4-flash")
+    
+    # 支持单模型字符串或多模型列表（如商汤按模型单独冷却）
+    models_val = acc.get("models") or acc.get("model", "glm-4-flash")
+    if isinstance(models_val, str):
+        models = [models_val]
+    elif isinstance(models_val, list):
+        models = models_val
+    else:
+        models = [str(models_val)]
+
     prompt = acc.get("prompt", "hi")
 
     if not api_key:
@@ -126,7 +136,7 @@ def ping_single_account(acc):
         return False
 
     masked_key = api_key[:6] + "..." + api_key[-4:] if len(api_key) > 10 else "***"
-    log(f"▶️ 开始预热 [{name}] (Model: {model}, Key: {masked_key}, BaseURL: {base_url})")
+    log(f"▶️ 开始预热 [{name}] (Key: {masked_key}, BaseURL: {base_url}, 模型清单: {models})")
 
     try:
         client = OpenAI(
@@ -137,33 +147,44 @@ def ping_single_account(acc):
         log(f"❌ [{name}] 客户端初始化失败: {e}")
         return False
 
-    max_retries = 3
-    retry_delay = 20
+    account_success = True
 
-    for attempt in range(1, max_retries + 1):
-        try:
-            log(f"  🚀 [{name}] 第 {attempt} 次发送预热请求...")
-            response = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=1
-            )
-            log(f"  ✅ [{name}] 预热成功！已被供应商节点正常响应。")
-            return True
+    for model_name in models:
+        max_retries = 3
+        retry_delay = 20
+        model_success = False
 
-        except Exception as e:
-            err_str = str(e)
-            log(f"  ⚠️ [{name}] 第 {attempt} 次反馈: {err_str}")
-            
-            if "429" in err_str or "rate limit" in err_str.lower():
-                log(f"  ℹ️ [{name}] 提示: 触发 Rate Limit，可能处于旧窗口或超额中。")
-            
-            if attempt < max_retries:
-                log(f"  ⏳ [{name}] 等待 {retry_delay} 秒后重试...")
-                time.sleep(retry_delay)
-            else:
-                log(f"  ⚠️ [{name}] 达到最大重试次数，预热流程结束。")
-                return False
+        for attempt in range(1, max_retries + 1):
+            try:
+                log(f"  🚀 [{name}] (模型: {model_name}) 第 {attempt} 次发送预热请求...")
+                response = client.chat.completions.create(
+                    model=model_name,
+                    messages=[{"role": "user", "content": prompt}],
+                    max_tokens=1
+                )
+                log(f"  ✅ [{name}] (模型: {model_name}) 预热成功！已激活该模型刷新/冷却窗口。")
+                model_success = True
+                break
+
+            except Exception as e:
+                err_str = str(e)
+                log(f"  ⚠️ [{name}] (模型: {model_name}) 第 {attempt} 次反馈: {err_str}")
+                
+                if "429" in err_str or "rate limit" in err_str.lower():
+                    log(f"  ℹ️ [{name}] (模型: {model_name}) 提示: 触发 Rate Limit，可能处于旧窗口或超额中。")
+                
+                if attempt < max_retries:
+                    log(f"  ⏳ [{name}] (模型: {model_name}) 等待 {retry_delay} 秒后重试...")
+                    time.sleep(retry_delay)
+                else:
+                    log(f"  ⚠️ [{name}] (模型: {model_name}) 达到最大重试次数，该模型预热流程结束。")
+
+        if not model_success:
+            account_success = False
+
+        time.sleep(1) # 模型之间的微小间隔
+
+    return account_success
 
 def main():
     now_bjt = datetime.datetime.now(TZ_BEIJING)
@@ -190,7 +211,7 @@ def main():
             time.sleep(2)
 
     log("\n==================================================")
-    log(f" 本轮调度结束! 实际触发: {executed_count}/{len(accounts)}, 成功: {success_count}/{executed_count if executed_count > 0 else 1}")
+    log(f" 本轮调度结束! 实际触发账号: {executed_count}/{len(accounts)}, 成功: {success_count}/{executed_count if executed_count > 0 else 1}")
     log("==================================================")
 
 if __name__ == "__main__":
