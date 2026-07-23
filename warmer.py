@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 llm-plan-warmer: 通用多供应商 & 多账号 LLM / Coding Plan 定时预热保活脚本
-支持每个供应商/账号单独自定义 trigger_hours / interval_hours (优先获取)
+支持 .env 自动加载与每个供应商/账号单独自定义 trigger_hours / interval_hours
 """
 import os
 import sys
@@ -10,6 +10,13 @@ import time
 import json
 import datetime
 from openai import OpenAI
+
+# 尝试自动加载 .env 文件 (方便本地调试测试)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 # 默认时区 (UTC+8 北京时间)
 TZ_BEIJING = datetime.timezone(datetime.timedelta(hours=8))
@@ -93,7 +100,6 @@ def should_run_acc(acc, now_bjt):
     if interval_hours is not None and isinstance(interval_hours, (int, float)) and interval_hours > 0:
         interval_hours = int(interval_hours)
         computed_hours = list(range(current_hour % interval_hours, 24, interval_hours))
-        # 对齐常见 5 小时窗口偏置：[5, 10, 15, 20]
         if interval_hours == 5:
             computed_hours = [5, 10, 15, 20]
         
@@ -104,7 +110,7 @@ def should_run_acc(acc, now_bjt):
             log(f"⏩ [{name}] 当前时间 ({current_hour}点) 不在间隔触发点 {computed_hours} 内，跳过。")
             return False
 
-    # 3. 未显式配置独立时间，默认每次任务均触发 (兼容通用配置及手动触发模式)
+    # 3. 未显式配置独立时间，默认每次任务均触发
     log(f"ℹ️ [{name}] 未显式配置独立时间段，默认本次触发。")
     return True
 
@@ -167,7 +173,7 @@ def main():
     
     accounts = parse_accounts()
     if not accounts:
-        log("❌ 错误: 未检测到任何服务商配置！请在 Secrets 中配置 LLM_ACCOUNTS。")
+        log("❌ 错误: 未检测到任何服务商配置！请在 .env 或 Secrets 中配置 LLM_ACCOUNTS。")
         sys.exit(1)
 
     log(f"📋 共检测到 {len(accounts)} 个服务商/账号配置，正在评估各自的时间表...\n")
