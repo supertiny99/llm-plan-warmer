@@ -1,6 +1,6 @@
-# 通用多供应商 LLM & Coding Plan 自动预热工具 (GitHub Actions)
+# llm-plan-warmer (通用多供应商 LLM & Coding Plan 自动预热保活工具)
 
-本项目用于通过 GitHub Actions 定时触发各类大模型供应商 (智谱 Coding Plan / DeepSeek / Kimi / 硅基流动 / 阿里云 DashScope / OpenAI 等) 的 API，以保持 5 小时刷新窗口的连续覆盖与保活。
+`llm-plan-warmer` 是一个轻量级、全自动的预热保活工具，通过 GitHub Actions 定时触发各类大模型供应商 (智谱 Coding Plan / DeepSeek / Kimi / 硅基流动 / 阿里云 DashScope / OpenAI 等) 的 API，以维持 5 小时刷新窗口的连续覆盖与最高利用率。
 
 ## 🌟 特性
 
@@ -10,7 +10,18 @@
 - **全自动打卡**：基于 GitHub Actions，按工作日（周一至周五）北京时间 `05:33`, `10:33`, `15:33`, `20:33` 自动触发。
 - **手动触发支持**：支持在 GitHub Actions 页面随时手动一键触发测试。
 
-## 🚀 多供应商配置示例
+## 🚀 部署与使用
+
+### 1. 将项目推送到你的 GitHub
+
+```bash
+cd llm-plan-warmer
+git remote add origin https://github.com/YOUR_USERNAME/llm-plan-warmer.git
+git branch -M main
+git push -u origin main
+```
+
+### 2. 配置 GitHub Secrets
 
 在 GitHub 仓库 **Settings** -> **Secrets and variables** -> **Actions** 中添加 Secret **`LLM_ACCOUNTS`**：
 

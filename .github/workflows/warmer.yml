@@ -33,4 +33,4 @@ jobs:
           ZHIPU_BASE_URL: ${{ secrets.ZHIPU_BASE_URL }}
           ZHIPU_MODEL: ${{ secrets.ZHIPU_MODEL }}
         run: |
-          python zhipu_ping.py
+          python warmer.py
