@@ -2,9 +2,8 @@ name: Universal LLM & Coding Plan Warmer
 
 on:
   schedule:
-    # 对应的北京时间为工作日 (周一至周五): 05:33, 10:33, 15:33, 20:33
-    - cron: '33 21 * * 0-4'
-    - cron: '33 2,7,12 * * 1-5'
+    # 每小时的第 33 分钟自动轮询评估 (由 warmer.py 根据各供应商的 trigger_hours 决定是否真正执行预热)
+    - cron: '33 * * * *'
   workflow_dispatch: # 支持在 GitHub Web 界面手动触发
 
 jobs:

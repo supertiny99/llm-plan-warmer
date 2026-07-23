@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-通用多供应商 & 多账号 LLM / Coding Plan 5小时定时预热/保活脚本
-支持: 智谱 Zhipu, DeepSeek, Kimi, 硅基流动, DashScope, OpenAI 等所有 OpenAI 协议兼容的服务商
+llm-plan-warmer: 通用多供应商 & 多账号 LLM / Coding Plan 定时预热保活脚本
+支持每个供应商/账号单独自定义 trigger_hours / interval_hours (优先获取)
 """
 import os
 import sys
@@ -11,8 +11,11 @@ import json
 import datetime
 from openai import OpenAI
 
+# 默认时区 (UTC+8 北京时间)
+TZ_BEIJING = datetime.timezone(datetime.timedelta(hours=8))
+
 def log(msg):
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    timestamp = datetime.datetime.now(TZ_BEIJING).strftime("%Y-%m-%d %H:%M:%S")
     print(f"[{timestamp}] {msg}")
 
 def parse_accounts():
@@ -57,10 +60,53 @@ def parse_accounts():
                 "name": "智谱默认账号",
                 "api_key": single_key,
                 "base_url": os.environ.get("ZHIPU_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/"),
-                "model": os.environ.get("ZHIPU_MODEL", "glm-4-flash")
+                "model": os.environ.get("ZHIPU_MODEL", "glm-4-flash"),
+                "trigger_hours": [5, 10, 15, 20]
             })
 
     return accounts
+
+def should_run_acc(acc, now_bjt):
+    """
+    判断该供应商/账号在当前小时是否需要执行
+    优先获取账号自定义的 trigger_hours -> interval_hours -> 默认全匹配
+    """
+    name = acc.get("name", "未命名账号")
+    if not acc.get("enabled", True):
+        log(f"⏩ [{name}] 账号处于禁用状态 (enabled: false)，跳过。")
+        return False
+
+    current_hour = now_bjt.hour
+
+    # 1. 最高优先级: 获取自定义 trigger_hours (例如: [5, 10, 15, 20])
+    trigger_hours = acc.get("trigger_hours")
+    if trigger_hours is not None and isinstance(trigger_hours, list):
+        if current_hour in trigger_hours:
+            log(f"🎯 [{name}] 匹配自定义触发时间段 trigger_hours: {trigger_hours} (当前: {current_hour}点)")
+            return True
+        else:
+            log(f"⏩ [{name}] 当前时间 ({current_hour}点) 不在设定的 trigger_hours {trigger_hours} 内，跳过。")
+            return False
+
+    # 2. 次高优先级: 获取 interval_hours (例如: 5 -> [5, 10, 15, 20], 3 -> [0, 3, 6, 9, 12, 15, 18, 21])
+    interval_hours = acc.get("interval_hours")
+    if interval_hours is not None and isinstance(interval_hours, (int, float)) and interval_hours > 0:
+        interval_hours = int(interval_hours)
+        computed_hours = list(range(current_hour % interval_hours, 24, interval_hours))
+        # 对齐常见 5 小时窗口偏置：[5, 10, 15, 20]
+        if interval_hours == 5:
+            computed_hours = [5, 10, 15, 20]
+        
+        if current_hour in computed_hours:
+            log(f"🎯 [{name}] 匹配间隔触发点 interval_hours={interval_hours}h (时间点: {computed_hours}, 当前: {current_hour}点)")
+            return True
+        else:
+            log(f"⏩ [{name}] 当前时间 ({current_hour}点) 不在间隔触发点 {computed_hours} 内，跳过。")
+            return False
+
+    # 3. 未显式配置独立时间，默认每次任务均触发 (兼容通用配置及手动触发模式)
+    log(f"ℹ️ [{name}] 未显式配置独立时间段，默认本次触发。")
+    return True
 
 def ping_single_account(acc):
     name = acc.get("name", "未命名服务商")
@@ -70,7 +116,7 @@ def ping_single_account(acc):
     prompt = acc.get("prompt", "hi")
 
     if not api_key:
-        log(f"❌ [{name}] 未配置 api_key，跳过此账号。")
+        log(f"❌ [{name}] 未配置 api_key，跳过。")
         return False
 
     masked_key = api_key[:6] + "..." + api_key[-4:] if len(api_key) > 10 else "***"
@@ -104,7 +150,7 @@ def ping_single_account(acc):
             log(f"  ⚠️ [{name}] 第 {attempt} 次反馈: {err_str}")
             
             if "429" in err_str or "rate limit" in err_str.lower():
-                log(f"  ℹ️ [{name}] 提示: 触发并发或频控限制 (Rate Limit)，可能处于旧窗口或超额中。")
+                log(f"  ℹ️ [{name}] 提示: 触发 Rate Limit，可能处于旧窗口或超额中。")
             
             if attempt < max_retries:
                 log(f"  ⏳ [{name}] 等待 {retry_delay} 秒后重试...")
@@ -114,26 +160,31 @@ def ping_single_account(acc):
                 return False
 
 def main():
+    now_bjt = datetime.datetime.now(TZ_BEIJING)
     log("==================================================")
-    log(" Starting Universal LLM / Coding Plan Warmer Task")
+    log(f" Starting Universal LLM Warmer Task ({now_bjt.strftime('%Y-%m-%d %H:%M:%S')} BJT)")
     log("==================================================")
     
     accounts = parse_accounts()
     if not accounts:
-        log("❌ 错误: 未检测到任何服务商配置！请在 Secrets 中配置 LLM_ACCOUNTS 或 ZHIPU_ACCOUNTS。")
+        log("❌ 错误: 未检测到任何服务商配置！请在 Secrets 中配置 LLM_ACCOUNTS。")
         sys.exit(1)
 
-    log(f"📋 共检测到 {len(accounts)} 个服务商/账号配置，开始依次处理...\n")
+    log(f"📋 共检测到 {len(accounts)} 个服务商/账号配置，正在评估各自的时间表...\n")
     
     success_count = 0
+    executed_count = 0
+
     for idx, acc in enumerate(accounts, 1):
-        log(f"--- [账号 {idx}/{len(accounts)}] ---")
-        if ping_single_account(acc):
-            success_count += 1
-        time.sleep(2)
+        log(f"--- [账号 {idx}/{len(accounts)}: {acc.get('name', '未命名')}] ---")
+        if should_run_acc(acc, now_bjt):
+            executed_count += 1
+            if ping_single_account(acc):
+                success_count += 1
+            time.sleep(2)
 
     log("\n==================================================")
-    log(f" 所有预热任务完成! 成功: {success_count}/{len(accounts)}")
+    log(f" 本轮调度结束! 实际触发: {executed_count}/{len(accounts)}, 成功: {success_count}/{executed_count if executed_count > 0 else 1}")
     log("==================================================")
 
 if __name__ == "__main__":
