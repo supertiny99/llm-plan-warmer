@@ -6,6 +6,7 @@
 
 - **通用 OpenAI 协议支持**：支持任何兼容 OpenAI 接口标准的 LLM 供应商。
 - **多 Key & 多模型组合矩阵**：`api_key` 与 `model` 均支持配置字符串或字符串数组。配置数组时自动按 `Key ✖️ Model` 矩阵批量发送预热，完美支持一个供应商下挂载多个账号/多套套餐。
+- **图像生成模型支持**：商汤 `sensenova-u1-fast` 等图像类模型经独立 `/images/generations` 接口预热（通过 `image_models` 标记），可与 Chat 模型混合配置于同一账号。
 - **独立时间表配置（优先获取）**：每个供应商/账号/模型均可单独配置 `trigger_hours`（如 `[5, 10, 15, 20]`）或 `interval_hours`（间隔小时数）。
 - **防止临界冲突**：自动添加 3 分钟缓冲与 429 Rate Limit 自动重试机制。
 - **手动触发支持**：支持在 GitHub Actions 页面随时手动一键触发测试。
@@ -22,8 +23,8 @@
       "your-zhipu-api-key-1",
       "your-zhipu-api-key-2"
     ],
-    "base_url": "https://open.bigmodel.cn/api/paas/v4/",
-    "model": "glm-4-flash",
+    "base_url": "https://open.bigmodel.cn/api/coding/paas/v4",
+    "model": "glm-4.7",
     "trigger_hours": [5, 10, 15, 20]
   },
   {
@@ -39,6 +40,7 @@
       "deepseek-v4-flash",
       "gml-5.2"
     ],
+    "image_models": ["sensenova-u1-fast"],
     "trigger_hours": [5, 10, 15, 20]
   },
   {
@@ -62,3 +64,7 @@
 | **`trigger_hours`** | Array[int] | **【最高优先级时间表】** 指定哪些点触发（北京时间 0~23h）。例如 `[5, 10, 15, 20]` |
 | **`interval_hours`** | int | **【次高优先级时间表】** 设定固定间隔小时数。例如 `4` 代表每 4 小时触发一次 |
 | **`enabled`** | bool | 开关控制（`true`/`false`），设为 `false` 可暂停该配置段预热 |
+| **`image_models`** | Array[String] | 需要走 `/images/generations` 图像生成接口的模型名列表（如 `["sensenova-u1-fast"]`）。未列入的模型仍走 Chat Completions |
+| **`image_prompt`** | String | 图像生成预热的 prompt（默认极简测试图，仅为刷新冷却窗口，无需消费生成结果） |
+| **`image_size`** | String | 图像尺寸（如 `2752x1536`，需为供应商支持的合法尺寸） |
+| **`image_n`** | int | 单次生成图片数量（默认 `1`） |

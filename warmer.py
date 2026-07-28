@@ -4,12 +4,15 @@
 llm-plan-warmer: 通用多供应商 & 多账号 LLM / Coding Plan 定时预热保活脚本
 支持: 智谱 Zhipu, 商汤 SenseNova Token Plan, DeepSeek, Kimi, 硅基流动等
 支持: 单/多 API Key (api_key 数组)、单/多模型 (model 数组)、自定义 trigger_hours / interval_hours
+支持: 图像生成类模型 (如商汤 sensenova-u1-fast) 经 /images/generations 接口预热
 """
 import os
 import sys
 import time
 import json
 import datetime
+
+import httpx
 from openai import OpenAI
 
 # 尝试自动加载 .env 文件 (方便本地调试测试)
@@ -51,7 +54,7 @@ def parse_accounts():
                 if item:
                     parts = item.split("|")
                     key = parts[0].strip()
-                    url = parts[1].strip() if len(parts) > 1 else "https://open.bigmodel.cn/api/paas/v4/"
+                    url = parts[1].strip() if len(parts) > 1 else "https://open.bigmodel.cn/api/coding/paas/v4"
                     model = parts[2].strip() if len(parts) > 2 else "glm-4-flash"
                     accounts.append({
                         "name": f"供应商_{idx+1}",
@@ -67,7 +70,7 @@ def parse_accounts():
             accounts.append({
                 "name": "智谱默认账号",
                 "api_key": single_key,
-                "base_url": os.environ.get("ZHIPU_BASE_URL", "https://open.bigmodel.cn/api/paas/v4/"),
+                "base_url": os.environ.get("ZHIPU_BASE_URL", "https://open.bigmodel.cn/api/coding/paas/v4"),
                 "model": os.environ.get("ZHIPU_MODEL", "glm-4-flash"),
                 "trigger_hours": [5, 10, 15, 20]
             })
@@ -115,6 +118,28 @@ def should_run_acc(acc, now_bjt):
     log(f"ℹ️ [{name}] 未显式配置独立时间段，默认本次触发。")
     return True
 
+def send_image_generation(base_url, api_key, model, prompt, size, n):
+    """
+    调用图像生成类接口 (如商汤 SenseNova sensenova-u1-fast)。
+    与 Chat Completions 不同，此类模型走 /images/generations，仅依据 prompt 生成图片，
+    不接受图像输入；返回的图片 URL 为 1 小时有效临时链接，预热时无需消费。
+    非 2xx 抛出 RuntimeError，交由上层重试逻辑处理。
+    """
+    url = base_url.rstrip("/") + "/images/generations"
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {"model": model, "prompt": prompt, "n": n}
+    if size:
+        payload["size"] = size
+    # 图像生成通常较慢，给予较长超时 (秒)
+    with httpx.Client(timeout=300.0) as http_client:
+        resp = http_client.post(url, headers=headers, json=payload)
+    if resp.status_code >= 400:
+        raise RuntimeError(f"Error code: {resp.status_code} - {resp.text[:300]}")
+
+
 def ping_single_account(acc):
     name = acc.get("name", "未命名服务商")
     
@@ -131,7 +156,7 @@ def ping_single_account(acc):
         log(f"❌ [{name}] 未配置有效的 api_key，跳过。")
         return False
 
-    base_url = acc.get("base_url", "https://open.bigmodel.cn/api/paas/v4/")
+    base_url = acc.get("base_url", "https://open.bigmodel.cn/api/coding/paas/v4")
     
     # 2. 支持单模型字符串或多模型数组 (model 或 models)
     models_val = acc.get("models") or acc.get("model", "glm-4-flash")
@@ -143,6 +168,19 @@ def ping_single_account(acc):
         models = [str(models_val)]
 
     prompt = acc.get("prompt", "hi")
+
+    # 图像生成类模型 (如商汤 SenseNova sensenova-u1-fast) 走独立的 /images/generations 接口，
+    # 而非 Chat Completions。此类模型不支持图像输入，仅按 prompt 生成图片。
+    image_models_val = acc.get("image_models") or []
+    if isinstance(image_models_val, str):
+        image_models = [image_models_val]
+    elif isinstance(image_models_val, list):
+        image_models = [m for m in image_models_val if isinstance(m, str)]
+    else:
+        image_models = []
+    image_prompt = acc.get("image_prompt", "a simple keep-alive test image")
+    image_size = acc.get("image_size", "2752x1536")
+    image_n = int(acc.get("image_n", 1))
 
     total_tasks = len(keys) * len(models)
     log(f"▶️ 开始预热 [{name}] (Key 数量: {len(keys)}, 模型数量: {len(models)}, 总预热任务数: {total_tasks}, BaseURL: {base_url})")
@@ -169,12 +207,16 @@ def ping_single_account(acc):
 
             for attempt in range(1, max_retries + 1):
                 try:
-                    log(f"  🚀 [{name}] (Key {key_idx}/{len(keys)}: {masked_key} | 模型: {model_name}) 第 {attempt} 次发送预热请求...")
-                    response = client.chat.completions.create(
-                        model=model_name,
-                        messages=[{"role": "user", "content": prompt}],
-                        max_tokens=1
-                    )
+                    if model_name in image_models:
+                        log(f"  🚀 [{name}] (Key {key_idx}/{len(keys)}: {masked_key} | 图像模型: {model_name}) 第 {attempt} 次发送图像生成预热请求 (接口: /images/generations)...")
+                        send_image_generation(base_url, api_key, model_name, image_prompt, image_size, image_n)
+                    else:
+                        log(f"  🚀 [{name}] (Key {key_idx}/{len(keys)}: {masked_key} | 模型: {model_name}) 第 {attempt} 次发送预热请求...")
+                        client.chat.completions.create(
+                            model=model_name,
+                            messages=[{"role": "user", "content": prompt}],
+                            max_tokens=1
+                        )
                     log(f"  ✅ [{name}] (Key {key_idx}/{len(keys)}: {masked_key} | 模型: {model_name}) 预热成功！已激活刷新/冷却窗口。")
                     model_success = True
                     break
