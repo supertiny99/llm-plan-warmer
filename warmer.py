@@ -72,7 +72,7 @@ def parse_accounts():
                 "api_key": single_key,
                 "base_url": os.environ.get("ZHIPU_BASE_URL", "https://open.bigmodel.cn/api/coding/paas/v4"),
                 "model": os.environ.get("ZHIPU_MODEL", "glm-4-flash"),
-                "trigger_hours": [5, 10, 15, 20]
+                "trigger_hours": [8, 13, 18]
             })
 
     return accounts
@@ -89,7 +89,13 @@ def should_run_acc(acc, now_bjt):
 
     current_hour = now_bjt.hour
 
-    # 1. 最高优先级: 获取自定义 trigger_hours (例如: [5, 10, 15, 20])
+    # 0. 峰时防呆兜底: 工作日 14:00-18:00 (北京时间) 为智谱等套餐的三倍消耗时段，
+    #    账号配置 avoid_weekday_peak: true 后，即使 trigger_hours 误配进峰时也会拒发
+    if acc.get("avoid_weekday_peak") and now_bjt.weekday() < 5 and 14 <= current_hour < 18:
+        log(f"⏭️ [{name}] 当前处于工作日峰时 (14:00-18:00 三倍消耗，avoid_weekday_peak 已启用)，跳过。")
+        return False
+
+    # 1. 最高优先级: 获取自定义 trigger_hours (例如: [8, 13, 18])
     trigger_hours = acc.get("trigger_hours")
     if trigger_hours is not None and isinstance(trigger_hours, list):
         if current_hour in trigger_hours:
@@ -99,13 +105,14 @@ def should_run_acc(acc, now_bjt):
             log(f"⏩ [{name}] 当前时间 ({current_hour}点) 不在设定的 trigger_hours {trigger_hours} 内，跳过。")
             return False
 
-    # 2. 次高优先级: 获取 interval_hours (例如: 5 -> [5, 10, 15, 20], 3 -> [0, 3, 6, 9, 12, 15, 18, 21])
+    # 2. 次高优先级: 获取 interval_hours (例如: 5 -> [8, 13, 18] 工作时段对齐锚点)
     interval_hours = acc.get("interval_hours")
     if interval_hours is not None and isinstance(interval_hours, (int, float)) and interval_hours > 0:
         interval_hours = int(interval_hours)
         computed_hours = list(range(current_hour % interval_hours, 24, interval_hours))
         if interval_hours == 5:
-            computed_hours = [5, 10, 15, 20]
+            # 5 小时窗口推荐锚点: 对齐工作时段 (8:30-11:30 / 13:30-17:30) 并避开工作日 14:00-18:00 峰时
+            computed_hours = [8, 13, 18]
         
         if current_hour in computed_hours:
             log(f"🎯 [{name}] 匹配间隔触发点 interval_hours={interval_hours}h (时间点: {computed_hours}, 当前: {current_hour}点)")
