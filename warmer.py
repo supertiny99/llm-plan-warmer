@@ -72,7 +72,7 @@ def parse_accounts():
                 "api_key": single_key,
                 "base_url": os.environ.get("ZHIPU_BASE_URL", "https://open.bigmodel.cn/api/coding/paas/v4"),
                 "model": os.environ.get("ZHIPU_MODEL", "glm-4-flash"),
-                "trigger_hours": [0, 8, 13, 18]
+                "trigger_hours": [7, 12, 18, 23]
             })
 
     return accounts
@@ -111,9 +111,9 @@ def should_run_acc(acc, now_bjt):
         interval_hours = int(interval_hours)
         computed_hours = list(range(current_hour % interval_hours, 24, interval_hours))
         if interval_hours == 5:
-            # 5 小时窗口推荐锚点: 对齐工作时段 (8:30-11:30 / 13:30-17:30)、接住夜间刷新，
+            # 5 小时窗口推荐锚点: 对齐工作时段 (8:30-11:30 / 13:30-17:30)、夜间窗口尽量提前、
             # 并避开工作日 14:00-18:00 峰时 (相邻间隔 5h20m，见 README 调度设计)
-            computed_hours = [0, 8, 13, 18]
+            computed_hours = [7, 12, 18, 23]
         
         if current_hour in computed_hours:
             log(f"🎯 [{name}] 匹配间隔触发点 interval_hours={interval_hours}h (时间点: {computed_hours}, 当前: {current_hour}点)")
