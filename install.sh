@@ -127,7 +127,9 @@ if [ "$(id -u)" = 0 ]; then
 fi
 
 # ---------- 确定安装目录并下载 ----------
-SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd || echo .)
+# curl | bash 管道模式下 BASH_SOURCE 未定义，回退到 $0
+SCRIPT_SRC="${BASH_SOURCE[0]:-$0}"
+SCRIPT_DIR=$(cd "$(dirname "$SCRIPT_SRC")" 2>/dev/null && pwd || echo .)
 IN_REPO=0
 if [ -f "$SCRIPT_DIR/warmer.py" ] && [ -f "$SCRIPT_DIR/requirements.txt" ]; then
   IN_REPO=1
