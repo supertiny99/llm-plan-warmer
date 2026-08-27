@@ -10,7 +10,9 @@ import os
 import sys
 import time
 import json
+import argparse
 import datetime
+from urllib.parse import quote
 
 import httpx
 from openai import OpenAI
@@ -148,32 +150,38 @@ def send_image_generation(base_url, api_key, model, prompt, size, n):
         raise RuntimeError(f"Error code: {resp.status_code} - {resp.text[:300]}")
 
 
-def ping_single_account(acc):
-    name = acc.get("name", "未命名服务商")
-    
-    # 1. 支持单 API Key 字符串或多 API Key 数组 (api_key 或 api_keys)
+def extract_keys(acc):
+    """提取账号的 API Key 列表，兼容单字符串与数组 (api_key / api_keys)"""
     keys_val = acc.get("api_keys") or acc.get("api_key", "")
     if isinstance(keys_val, str):
-        keys = [keys_val] if keys_val.strip() else []
-    elif isinstance(keys_val, list):
-        keys = [k for k in keys_val if isinstance(k, str) and k.strip()]
-    else:
-        keys = [str(keys_val)] if keys_val else []
+        return [keys_val] if keys_val.strip() else []
+    if isinstance(keys_val, list):
+        return [k for k in keys_val if isinstance(k, str) and k.strip()]
+    return [str(keys_val)] if keys_val else []
+
+def extract_models(acc):
+    """提取账号的模型列表，兼容单字符串与数组 (model / models)"""
+    models_val = acc.get("models") or acc.get("model", "glm-4-flash")
+    if isinstance(models_val, str):
+        return [models_val]
+    if isinstance(models_val, list):
+        return models_val
+    return [str(models_val)]
+
+def ping_single_account(acc):
+    name = acc.get("name", "未命名服务商")
+
+    # 1. 支持单 API Key 字符串或多 API Key 数组 (api_key 或 api_keys)
+    keys = extract_keys(acc)
 
     if not keys:
         log(f"❌ [{name}] 未配置有效的 api_key，跳过。")
         return False
 
     base_url = acc.get("base_url", "https://open.bigmodel.cn/api/coding/paas/v4")
-    
+
     # 2. 支持单模型字符串或多模型数组 (model 或 models)
-    models_val = acc.get("models") or acc.get("model", "glm-4-flash")
-    if isinstance(models_val, str):
-        models = [models_val]
-    elif isinstance(models_val, list):
-        models = models_val
-    else:
-        models = [str(models_val)]
+    models = extract_models(acc)
 
     prompt = acc.get("prompt", "hi")
 
@@ -249,7 +257,58 @@ def ping_single_account(acc):
 
     return account_success
 
+def dry_run_report(accounts, now_bjt):
+    """
+    配置校验模式: 打印每个账号的配置摘要与当前北京时间下的触发判定，不发送任何 API 请求。
+    供安装器 (install.sh) 与用户自查配置使用。
+    """
+    log("🧪 DRY-RUN 模式: 仅校验配置与触发时间匹配，不会发送任何请求。\n")
+    for idx, acc in enumerate(accounts, 1):
+        name = acc.get("name", "未命名账号")
+        base_url = acc.get("base_url", "https://open.bigmodel.cn/api/coding/paas/v4")
+        keys = extract_keys(acc)
+        models = extract_models(acc)
+        schedule = acc.get("trigger_hours") or acc.get("interval_hours") or "未配置 (默认每次均触发)"
+        image_models = acc.get("image_models", [])
+
+        log(f"--- [账号配置 {idx}/{len(accounts)}: {name}] ---")
+        log(f"    BaseURL: {base_url}")
+        log(f"    Key 数量: {len(keys)} | 模型: {', '.join(models)}")
+        log(f"    调度配置: {schedule} | 图像模型: {', '.join(image_models) if image_models else '无'}")
+        if not keys:
+            log("    ⚠️ 未配置有效的 api_key！")
+        will_run = should_run_acc(acc, now_bjt)
+        log(f"    → 当前北京时间 {now_bjt.strftime('%H:%M')} 触发判定: {'✅ 会触发' if will_run else '❌ 不会触发'}\n")
+
+def send_failure_notify(message):
+    """
+    发送失败通知到 WARMER_NOTIFY_URL (.env 配置，可选)。
+    支持两种风格:
+    - URL 含 {message} 占位符: 替换为 URL 编码后的消息后 GET (Bark / Server酱等)
+    - 其他: POST JSON {"title", "content"} (通用 webhook)
+    通知失败不影响预热流程与退出码。
+    """
+    url = os.environ.get("WARMER_NOTIFY_URL", "").strip()
+    if not url:
+        return
+    try:
+        if "{message}" in url:
+            target = url.replace("{message}", quote(message, safe=""))
+            with httpx.Client(timeout=10.0, follow_redirects=True) as client:
+                resp = client.get(target)
+        else:
+            with httpx.Client(timeout=10.0, follow_redirects=True) as client:
+                resp = client.post(url, json={"title": "llm-plan-warmer 预热异常", "content": message})
+        log(f"📣 失败通知已发送 (HTTP {resp.status_code})。")
+    except Exception as e:
+        log(f"⚠️ 失败通知发送失败 (不影响预热流程): {e}")
+
 def main():
+    parser = argparse.ArgumentParser(description="通用多供应商 LLM / Coding Plan 定时预热保活脚本")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="仅校验配置与触发时间匹配，不发送任何 API 请求")
+    args = parser.parse_args()
+
     now_bjt = datetime.datetime.now(TZ_BEIJING)
     log("==================================================")
     log(f" Starting Universal LLM Warmer Task ({now_bjt.strftime('%Y-%m-%d %H:%M:%S')} BJT)")
@@ -259,6 +318,10 @@ def main():
     if not accounts:
         log("❌ 错误: 未检测到任何服务商配置！请在 .env 或 Secrets 中配置 LLM_ACCOUNTS。")
         sys.exit(1)
+
+    if args.dry_run:
+        dry_run_report(accounts, now_bjt)
+        return
 
     log(f"📋 共检测到 {len(accounts)} 个服务商/账号配置，正在评估各自的时间表...\n")
     
@@ -276,6 +339,15 @@ def main():
     log("\n==================================================")
     log(f" 本轮调度结束! 实际触发配置数: {executed_count}/{len(accounts)}, 成功: {success_count}/{executed_count if executed_count > 0 else 1}")
     log("==================================================")
+
+    # 失败通知 (可选): 请求存在失败，或全部账号均未触发 (服务器场景下通常是
+    # cron 时区漂移 / trigger_hours 与 cron 不匹配导致的静默跳过) 时推送 WARMER_NOTIFY_URL
+    if success_count < executed_count or executed_count == 0:
+        summary = (f"触发 {executed_count}/{len(accounts)}, 成功 {success_count}/{executed_count} "
+                   f"({now_bjt.strftime('%Y-%m-%d %H:%M')} BJT)")
+        if executed_count == 0:
+            summary += "。全部账号未触发: 若部署在服务器，通常是 cron 时区漂移或 trigger_hours 与 cron 不匹配"
+        send_failure_notify(summary)
 
 if __name__ == "__main__":
     main()

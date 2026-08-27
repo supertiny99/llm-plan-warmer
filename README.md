@@ -1,6 +1,6 @@
 # llm-plan-warmer (通用多供应商 LLM & Coding Plan 自动预热保活工具)
 
-`llm-plan-warmer` 是一个轻量级、全自动的预热保活工具，通过 GitHub Actions 定时触发各类大模型供应商 (智谱 Coding Plan / 商汤 SenseNova Token Plan / DeepSeek / Kimi / 硅基流动 / 阿里云 DashScope / OpenAI 等) 的 API，以维持 5 小时（或自定义窗口）刷新周期的连续覆盖与最高利用率，并自动避开工作日峰时三倍消耗时段。
+`llm-plan-warmer` 是一个轻量级、全自动的预热保活工具，通过服务器 cron 一键部署或 GitHub Actions 定时触发各类大模型供应商 (智谱 Coding Plan / 商汤 SenseNova Token Plan / DeepSeek / Kimi / 硅基流动 / 阿里云 DashScope / OpenAI 等) 的 API，以维持 5 小时（或自定义窗口）刷新周期的连续覆盖与最高利用率，并自动避开工作日峰时三倍消耗时段。
 
 ## 🌟 特性
 
@@ -10,7 +10,7 @@
 - **独立时间表配置（优先获取）**：每个供应商/账号/模型均可单独配置 `trigger_hours`（如 `[8, 13, 18]`）或 `interval_hours`（间隔小时数）。
 - **峰时三倍消耗避让**：默认调度锚点全部避开工作日 14:00-18:00 峰时；配合 `avoid_weekday_peak` 防呆兜底，即使 `trigger_hours` 误配进峰时也会拒发。
 - **20 分钟错峰缓冲**：相邻锚点间隔 5h20m（而非整 5 小时），确保上一窗口已过期、锚点必定开出新窗口，消除"请求打进旧窗口"的整点竞态。
-- **429 Rate Limit 自动重试** 与手动触发支持（GitHub Actions 页面一键测试）。
+- **429 Rate Limit 自动重试**、`--dry-run` 配置校验、失败推送通知（`WARMER_NOTIFY_URL`）与手动触发支持。
 
 ## 📐 调度设计（5 小时窗口 × 峰时避让）
 
@@ -33,7 +33,44 @@
 - **cron 使用 UTC**：北京时间 = UTC+8，`warmer.yml` 中 `40 4 * * *` 即北京 12:40。若配置了默认锚点之外的 `trigger_hours`，需在 workflow 中同步增加对应 cron 行，否则该小时永远不会被评估。
 - **周一周日通用**：锚点不落峰时，周末同样有效，无需区分工作日/周末。
 
-## 🚀 多供应商 & 多 Key 配置示例
+## 🖥️ 服务器一键部署（推荐）
+
+部署到自有服务器的系统 cron 上，触发时刻精确到秒级，不受 GitHub Actions 调度延迟（实测 15-75 分钟）与偶发丢调度影响。安装器会自动：克隆仓库 → 创建 venv 并安装依赖 → 生成 `.env` → 按服务器时区换算锚点并写入 crontab → 运行 `--dry-run` 校验配置。
+
+```bash
+# 方式一：一行命令安装（随后编辑 ~/llm-plan-warmer/.env 填入真实 Key）
+curl -fsSL https://raw.githubusercontent.com/supertiny99/llm-plan-warmer/master/install.sh | bash
+
+# 方式二：带智谱 API Key 直装，装完即用
+curl -fsSL https://raw.githubusercontent.com/supertiny99/llm-plan-warmer/master/install.sh | bash -s -- --key <你的智谱API Key>
+
+# 方式三：手动克隆后安装
+git clone https://github.com/supertiny99/llm-plan-warmer.git && cd llm-plan-warmer && bash install.sh
+```
+
+要求：Python ≥ 3.8 + `git` 或 `curl`（Linux/macOS 均可）；服务器需常开（睡眠/关机期间锚点会丢失）。
+
+常用操作：
+
+| 操作 | 命令 |
+| :--- | :--- |
+| 手动预热一次 | `~/llm-plan-warmer/run.sh`（日志在 `~/llm-plan-warmer/logs/warmer.log`） |
+| 校验配置（不发请求） | `cd ~/llm-plan-warmer && venv/bin/python warmer.py --dry-run` |
+| 更新到最新版 | 重新运行安装命令（`.env` 保持不动，crontab 幂等刷新） |
+| 预览 cron 行 | `bash install.sh --print-cron` |
+| 卸载 | `bash ~/llm-plan-warmer/install.sh --uninstall`（仅摘除 crontab，不删文件） |
+
+说明与注意事项：
+
+- **时区自动换算**：`warmer.py` 按北京时间整点匹配 `trigger_hours`，安装器读取服务器时区把锚点 07:20/12:40/18:00/23:20 (BJT) 换算成本地时间写入 crontab；国内服务器（UTC+8）写入的就是北京时间本身。
+- **夏令时提醒**：服务器时区若使用夏令时（如欧美时区），换季后锚点会偏移 1 小时导致静默跳过，请重跑 `install.sh` 刷新 crontab。
+- **失败通知（可选，服务器部署推荐）**：在 `.env` 中配置 `WARMER_NOTIFY_URL`（支持 Bark / Server酱 / 通用 webhook，见 `.env.example` 注释），预热请求失败或全部账号未触发（时区漂移信号）时推送一次。
+- **国内加速**：依赖安装前可 `export PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple` 走清华镜像。
+- 自定义了默认之外的 `trigger_hours`？用 `bash install.sh --anchors "HH:MM,..."` 生成对应的 cron 行，并保持与 `trigger_hours` 小时一致。
+
+## 🚀 GitHub Actions 部署（免服务器备选）
+
+零服务器方案：cron 延迟实测 15-75 分钟（延迟跨锚点小时会被脚本静默跳过）且偶发丢调度，稳定性弱于服务器部署，胜在免运维。
 
 在 GitHub 仓库 **Settings** -> **Secrets and variables** -> **Actions** 中添加 Secret **`LLM_ACCOUNTS`**：
 
