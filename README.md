@@ -50,7 +50,23 @@ git clone https://github.com/supertiny99/llm-plan-warmer.git && cd llm-plan-warm
 
 要求：Python ≥ 3.8 + `git` 或 `curl`（Linux/macOS 均可）；服务器需常开（睡眠/关机期间锚点会丢失）。
 
-常用操作：
+### 日常使用
+
+安装完成后 **crontab 已自动注册，无需任何启动命令**，每天会在锚点时刻（北京时间 07:20 / 12:40 / 18:00 / 23:20）自动预热。日常只需偶尔看日志确认：
+
+```bash
+# 确认 crontab 已安装（应看到 llm-plan-warmer 标记块及四行锚点）
+crontab -l | grep -A 6 "llm-plan-warmer begin"
+
+# 查看运行日志（每行含北京时间戳；"实际触发配置数: 2/2, 成功: 2/2" 即预热成功）
+tail -n 50 ~/llm-plan-warmer/logs/warmer.log
+
+# 手动补跑一次预热（如错过锚点或刚改完配置）
+~/llm-plan-warmer/run.sh
+
+# 修改 .env 后先校验配置（不发请求），确认无误即生效，无需重启任何服务
+cd ~/llm-plan-warmer && venv/bin/python warmer.py --dry-run
+```
 
 | 操作 | 命令 |
 | :--- | :--- |
@@ -58,7 +74,26 @@ git clone https://github.com/supertiny99/llm-plan-warmer.git && cd llm-plan-warm
 | 校验配置（不发请求） | `cd ~/llm-plan-warmer && venv/bin/python warmer.py --dry-run` |
 | 更新到最新版 | 重新运行安装命令（`.env` 保持不动，crontab 幂等刷新） |
 | 预览 cron 行 | `bash install.sh --print-cron` |
-| 卸载 | `bash ~/llm-plan-warmer/install.sh --uninstall`（仅摘除 crontab，不删文件） |
+| 暂停预热 | `bash ~/llm-plan-warmer/install.sh --uninstall`（仅摘除 crontab，文件与 `.env` 保留） |
+| 恢复预热 | 重新运行安装命令（检测到已有 `.env` 会原样保留，仅重装 crontab） |
+| 彻底删除 | 先 `--uninstall`，再 `rm -rf ~/llm-plan-warmer` |
+
+### 停止预热
+
+- **暂停**（保留配置，随时可恢复）：`bash ~/llm-plan-warmer/install.sh --uninstall` —— 只摘除 crontab 条目，不删文件；也可以 `crontab -e` 手动注释掉 `# >>> llm-plan-warmer begin >>>` 与 `end <<<` 之间的行。
+- **恢复**：重新运行安装命令即可。
+- **彻底删除**：`--uninstall` 后 `rm -rf ~/llm-plan-warmer`。
+
+### 停用 GitHub Actions 备选
+
+迁移到服务器后，建议停用 GitHub Actions 避免双跑：
+
+```bash
+gh workflow disable warmer.yml -R <你的用户名>/llm-plan-warmer   # 停用
+gh workflow enable  warmer.yml -R <你的用户名>/llm-plan-warmer   # 恢复
+```
+
+等价网页操作：仓库 → **Actions** 标签页 → 左侧选中 **Universal LLM & Coding Plan Warmer** → 右上 `⋯` 菜单 → **Disable workflow**。停用只阻止新的调度，正在跑的 run 会自然结束（约 1 分钟内）。
 
 说明与注意事项：
 
